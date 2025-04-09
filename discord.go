@@ -1,196 +1,194 @@
 package main
 
 import (
-    "errors"
-    "fmt"
-    "os"
-    "os/exec"
-    "os/signal"
-    "strconv"
-    "syscall"
-    "sync"
-    "github.com/bwmarrin/discordgo"
-    "github.com/bwmarrin/discordgo/voice"
-    "log"
-    "time"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strings"
+	"syscall"
+	"sync"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 var (
-    Token     = "MTM1OTAzNTYxNTQxNjQyMjQwMA.GJV6G3.hv1jhbcpfoyT1GIflSCubjKSkT1PMkSXI8Pr1w" // 將這裡替換為您的 Bot Token
-    voiceConn *voice.VoiceConnection
-    queue     []string             // 音樂隊列
-    mu        sync.Mutex           // 鎖以保護隊列
-    isPlaying = false              // 標記音樂是否正在播放
+	BotToken = "MTM1OTAzNTYxNTQxNjQyMjQwMA.GJV6G3.hv1jhbcpfoyT1GIflSCubjKSkT1PMkSXI8Pr1w" // 將這裡的 YOUR_BOT_TOKEN 替換為您的機器人 Token
+
+	commandPrefix = "!" // 指令前綴
+
+	guildsMutex = sync.RWMutex{}
+
+	sc chan os.Signal
 )
 
 func main() {
-    dg, err := discordgo.New("Bot " + Token)
-    if err != nil {
-        fmt.Println("error creating Discord session,", err)
-        return
-    }
+	// 創建 Discord Session
+	session, err := discordgo.New("Bot " + BotToken)
+	if err != nil {
+		log.Fatal("error creating Discord bot,", err)
+	}
 
-    dg.AddMessageCreate(messageCreate)
-    dg.AddHandler(ready)
+	// 設定 intents
+	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates | discordgo.IntentsGuildMessages
 
-    err = dg.Open()
-    if err != nil {
-        fmt.Println("error opening connection,", err)
-        return
-    }
-    fmt.Println("Bot is now running. Press CTRL+C to exit.")
+	// 註冊消息處理器
+	session.AddHandler(messageHandler)
 
-    // 等待關閉信號
-    c := make(chan os.Signal, 1)
-    signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-    <-c
+	// 開啟與 Discord 的連接
+	err = session.Open()
+	if err != nil {
+		log.Fatalf("error opening connection: %v", err)
+	}
 
-    dg.Close()
+	defer session.Close()
+
+	fmt.Println("the bot is online")
+
+	// 捕獲終止信號以清理
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
+	<-sc
 }
 
-func ready(s *discordgo.Session, event *discordgo.Ready) {
-    fmt.Println("Bot is ready!")
+func messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author.Bot || m.Author.ID == s.State.User.ID {
+		return
+	}
+
+	log.Printf("收到訊息: %s, 用戶: %s", m.Content, m.Author.Username)
+
+	if strings.HasPrefix(m.Content, commandPrefix) {
+		command := strings.Replace(strings.Split(m.Content, " ")[0], commandPrefix, "", 1)
+		query := strings.TrimSpace(strings.Replace(m.Content, fmt.Sprintf("%s%s", commandPrefix, command), "", 1))
+		command = strings.ToLower(command)
+		guildsMutex.Lock()
+		activeGuild := guilds[m.GuildID]
+		guildsMutex.Unlock()
+		switch command {
+		case "youtube", "yt", "play":
+			HandleYoutubeCommand(s, activeGuild, m, query)
+		case "skip":
+			if activeGuild != nil && activeGuild.UserActions != nil {
+				activeGuild.UserActions.Skip()
+			}
+		case "stop":
+			if activeGuild != nil && activeGuild.UserActions != nil {
+				activeGuild.UserActions.Stop()
+			} else {
+				// If queue is nil and the user still wrote !stop, it's possible that there's a VC still active
+				s.Lock()
+				if s.VoiceConnections[m.GuildID] != nil {
+					log.Printf("[%s] Force disconnecting VC (!stop was called and queue was already nil)", GetGuildNameByID(s, m.GuildID))
+					s.VoiceConnections[m.GuildID].Disconnect()
+				}
+				s.Unlock()
+			}
+		case "health":
+			latency := s.HeartbeatLatency()
+			_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Heartbeat latency: %s", latency))
+	}
+
+	// 如果收到 !join 命令，機器人加入語音頻道
+	if m.Content == "!join" {
+		if m.GuildID == "" {
+			s.ChannelMessageSend(m.ChannelID, "需要在伺服器內使用此命令。")
+			return
+		}
+
+		guild, err := s.State.Guild(m.GuildID)
+		if err != nil || len(guild.VoiceStates) == 0 {
+			s.ChannelMessageSend(m.ChannelID, "找不到語音頻道。")
+			return
+		}
+
+		// 假設機器人加入第一個語音頻道
+		voiceChannelID := guild.VoiceStates[0].ChannelID
+		err = joinVoiceChannel(s, m.GuildID, voiceChannelID) // 使用 gID 和 cID
+		if err != nil {
+			log.Println("Error joining voice channel:", err)
+			return
+		}
+		s.ChannelMessageSend(m.ChannelID, "已加入語音頻道。")
+	}
+	}
 }
 
-func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-    if m.Author.ID == s.State.User.ID {
-        return // 忽略自己的消息
-    }
-
-    switch {
-    case m.Content == "!join":
-        joinVoiceChannel(s, m)
-    case m.Content == "!leave":
-        leaveVoiceChannel(s, m)
-    case m.Content == "!queue":
-        showQueue(s, m)
-    case len(m.Content) > 6 && m.Content[:6] == "!play ":
-        playYouTube(s, m)
-    case len(m.Content) > 8 && m.Content[:8] == "!volume ":
-        setVolume(s, m)
-    default:
-        return
-    }
+// joinVoiceChannel 函數加入語音頻道
+func joinVoiceChannel(s *discordgo.Session, guildID string, voiceChannelID string) error {
+	_, err := s.ChannelVoiceJoin(guildID, voiceChannelID, false, false) // 使用 gID 和 cID
+	return err
 }
 
-func joinVoiceChannel(s *discordgo.Session, m *discordgo.MessageCreate) {
-    voiceChannelID := m.Member.VoiceChannelID
-    if voiceChannelID == "" {
-        s.ChannelMessageSend(m.ChannelID, "你需要在一個語音頻道中！")
-        return
-    }
-    var err error
-    voiceConn, err = s.ChannelVoiceJoin(m.GuildID, voiceChannelID, false, false)
-    if err != nil {
-        s.ChannelMessageSend(m.ChannelID, "無法加入語音頻道: "+err.Error())
-        return
-    }
-    s.ChannelMessageSend(m.ChannelID, "已加入語音頻道！")
+// playMusic 函數播放音樂
+func playMusic(s *discordgo.Session, guildID string, voiceChannelID string, url string) error {
+	// 使用 yt-dlp 下載音樂流
+	cmd := exec.Command("yt-dlp", "-f", "worstaudio", url) // 將每個參數單獨傳遞
+
+	// 獲取標準輸出
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("獲取標準輸出失敗:%s ,網址: %s", err, url)
+		return err
+	}
+
+	// 開始命令
+	err = cmd.Start()
+	if err != nil {
+		log.Printf("開始命令失敗:%s ,網址: %s", err, url)
+		return err
+	}
+
+	// 等待命令結束
+	if err := cmd.Wait(); err != nil {
+		log.Printf("等待命令結束失敗:%s ,網址: %s", err, url)
+		return err
+	}
+
+	// 獲取語音連接
+	voiceConnection, err := s.ChannelVoiceJoin(guildID, voiceChannelID, false, false)
+	if err != nil {
+		log.Printf("獲取語音連接失敗:%s ,網址: %s", err, url)
+		return err
+	}
+
+	// 設置語音通道為正在播放狀態
+	err = voiceConnection.Speaking(true)
+	if err != nil {
+		log.Printf("設置語音通道為正在播放狀態失敗:%s ,網址: %s", err, url)
+		return err
+	}
+
+	// 將音頻流送入語音通道
+	go func() {
+		err = sendAudioToVoiceChannel(voiceConnection, pipe)
+		if err != nil {
+			log.Printf("將音頻流送入語音通道失敗:%s ,網址: %s", err, url)
+		}
+	}()
+
+	return nil
 }
 
-func leaveVoiceChannel(s *discordgo.Session, m *discordgo.MessageCreate) {
-    if voiceConn != nil {
-        voiceConn.Disconnect()
-        voiceConn = nil
-        isPlaying = false
-        queue = nil // 清空隊列
-        s.ChannelMessageSend(m.ChannelID, "已離開語音頻道！")
-    }
-}
+// sendAudioToVoiceChannel 將音頻數據發送到語音通道
+func sendAudioToVoiceChannel(voiceConnection *discordgo.VoiceConnection, pipe io.ReadCloser) error {
+	buffer := make([]byte, 1024) // 每次讀取 1024 字節
 
-func showQueue(s *discordgo.Session, m *discordgo.MessageCreate) {
-    mu.Lock()
-    defer mu.Unlock()
+	for {
+		n, err := pipe.Read(buffer)
+		if err != nil {
+			break // 讀取錯誤或 EOF，退出循環
+		}
+		if n == 0 {
+			break // 沒有更多數據時退出循環
+		}
 
-    if len(queue) == 0 {
-        s.ChannelMessageSend(m.ChannelID, "隊列是空的！")
-        return
-    }
-    response := "當前隊列:\n"
-    for i, url := range queue {
-        response += fmt.Sprintf("%d: %s\n", i+1, url)
-    }
-    s.ChannelMessageSend(m.ChannelID, response)
-}
+		// 將數據發送到 OpusSend channel
+		voiceConnection.OpusSend <- buffer[:n] // 將數據發送到 OpusSend channel
+	}
 
-func playYouTube(s *discordgo.Session, m *discordgo.MessageCreate) {
-    url := m.Content[6:] // 獲取 YouTube 連結
-    mu.Lock()
-    queue = append(queue, url)
-    mu.Unlock()
-
-    if !isPlaying {
-        isPlaying = true
-        go playNext(s)
-    }
-    s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("已將歌曲添加到隊列: %s", url))
-}
-
-func playNext(s *discordgo.Session) {
-    mu.Lock()
-    if len(queue) == 0 {
-        isPlaying = false
-        mu.Unlock()
-        return
-    }
-    url := queue[0]
-    queue = queue[1:] // 移除隊列中的第一首歌
-    mu.Unlock()
-
-    err := playYouTubeMusic(voiceConn, url)
-    if err != nil {
-        s.ChannelMessageSend("無法撥放音樂: " + err.Error())
-    }
-
-    // 播放完成後遞歸調用下一首
-    playNext(s)
-}
-
-func setVolume(s *discordgo.Session, m *discordgo.MessageCreate) {
-    volumeStr := m.Content[8:]
-    volume, err := strconv.Atoi(volumeStr)
-    if err != nil || volume < 0 || volume > 100 {
-        s.ChannelMessageSend(m.ChannelID, "請提供 0 到 100 的有效音量值！")
-        return
-    }
-
-    // 假設使用 ffmpeg 進行音量控制
-    s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("音量已設置為 %d%%", volume))
-    // 在這裡您應該將音量應用到音頻流中
-    // 您可以根據具體情況進行修改
-}
-
-func playYouTubeMusic(vc *voice.VoiceConnection, url string) error {
-    cmd := exec.Command("yt-dlp", "-f", "bestaudio", "--extract-audio", "--audio-format", "mp3", "--output", "-", url)
-
-    pipe, err := cmd.StdoutPipe()
-    if err != nil {
-        return err
-    }
-
-    err = cmd.Start()
-    if err != nil {
-        return err
-    }
-
-    go func() {
-        // 將音頻流傳送到 Discord
-        buf := make([]byte, 1024)
-        for {
-            n, err := pipe.Read(buf)
-            if err != nil {
-                break
-            }
-            vc.OpusSend <- buf[:n]
-        }
-    }()
-
-    // 等待命令執行完成
-    err = cmd.Wait()
-    if err != nil {
-        log.Println("Error playing music:", err)
-        return errors.New("無法撥放音樂，請檢查 YouTube 連結是否正確")
-    }
-
-    return nil
+	return nil
 }
