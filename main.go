@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -24,6 +28,12 @@ var (
 	guildNames       = make(map[string]string)
 	guildsMutex      = sync.RWMutex{}
 	youtubeService   *youtube.Service
+
+	// 聊天機器人設定
+	app_name   = "multi_tool_agent"
+	user_id    = "user"
+	session_id = "6184ae5e-89b9-483d-86f6-881f52d6bb0a"
+	api_url    = "http://127.0.0.1:8000/run_sse" // 在此替換為你的目標 URL
 )
 
 func main() {
@@ -62,7 +72,7 @@ func messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	log.Printf("收到訊息: %s, 用戶: %s", m.Content, m.Author.Username)
+	log.Printf("收到訊息: %s, 用戶: %s, 文字頻道ID: %s", m.Content, m.Author.Username, m.ChannelID)
 
 	if strings.HasPrefix(m.Content, commandPrefix) {
 		command := strings.Replace(strings.Split(m.Content, " ")[0], commandPrefix, "", 1)
@@ -94,6 +104,10 @@ func messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 			latency := s.HeartbeatLatency()
 			_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Heartbeat latency: %s", latency))
 		}
+	}
+	if m.ChannelID == "1364124257889681429" {
+		log.Println("收到訊息")
+		Chat_Gemini(s, m)
 	}
 }
 
@@ -127,7 +141,6 @@ func GetGuildNameByID(bot *discordgo.Session, guildID string) string {
 	}
 	return guildName
 }
-
 
 // 播放音樂
 func HandleYoutubeCommand(s *discordgo.Session, activeGuild *core.ActiveGuild, m *discordgo.MessageCreate, query string) {
@@ -189,7 +202,7 @@ func HandleYoutubeCommand(s *discordgo.Session, activeGuild *core.ActiveGuild, m
 		log.Printf("[%s] Starting worker", activeGuild.Name)
 		go func() {
 			err = worker(s, activeGuild, m.GuildID, voiceChannelId)
-			
+
 			if err != nil {
 				log.Printf("[%s] Failed to start worker: %s", activeGuild.Name, err.Error())
 				_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("❌ Unable to start voice worker: %s", err.Error()))
@@ -197,5 +210,81 @@ func HandleYoutubeCommand(s *discordgo.Session, activeGuild *core.ActiveGuild, m
 				return
 			}
 		}()
+	}
+}
+
+func Chat_Gemini(s *discordgo.Session, m *discordgo.MessageCreate) {
+	data := map[string]any{
+		"app_name":   app_name,
+		"user_id":    user_id,
+		"session_id": session_id,
+		"new_message": map[string]any{
+			"role": user_id,
+			"parts": []map[string]string{
+				{
+					"text": m.Content,
+				},
+			},
+		},
+		"streaming": false,
+	}
+
+	// 將數據編碼為 JSON
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err.Error())
+		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error marshalling JSON: %s", err.Error()))
+		return
+	}
+
+	// 發送 POST 請求
+	resp, err := http.Post(api_url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("Error sending POST request:", err.Error())
+		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error sending POST request: %s", err.Error()))
+		return
+	}
+	defer resp.Body.Close()
+
+	// 打印響應狀態碼
+	log.Printf("Response Status Code: %d", resp.StatusCode)
+
+	// 打印響應頭
+	log.Printf("Response Headers: %v", resp.Header)
+
+	// 讀取響應體
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading response body: %s", err.Error())
+		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error reading response body: %s", err.Error()))
+		return
+	}
+
+	// 去掉 "data: " 前綴
+	jsondata := []byte(strings.TrimPrefix(string(body), "data: "))
+
+	// 使用 map 來解析 JSON 數據
+	var result map[string]any
+	if err := json.Unmarshal([]byte(jsondata), &result); err != nil {
+		log.Printf("Error decoding JSON: %s", err.Error())
+		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error decoding JSON: %s", err.Error()))
+		return
+	}
+
+	// 提取 text 的內容
+	if content, ok := result["content"].(map[string]any); ok {
+		if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
+			if part, ok := parts[0].(map[string]any); ok {
+				if text, ok := part["text"].(string); ok {
+					log.Printf("提取的 text: %s", text)
+					mention := "<@" + m.Author.ID + ">"
+					messageContent := mention + " " + text
+					_, _ = s.ChannelMessageSend(m.ChannelID, messageContent)
+				}
+			}
+		}
+	} else {
+		log.Printf("未找到任何 text, 回傳值: %s", string(body))
+		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("未找到任何 text, 回傳值: %s", string(body)))
 	}
 }
