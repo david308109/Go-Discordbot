@@ -21,7 +21,7 @@ import (
 )
 
 var (
-	BotToken         = "MTM1OTAzNTYxNTQxNjQyMjQwMA.GJV6G3.hv1jhbcpfoyT1GIflSCubjKSkT1PMkSXI8Pr1w" // 將這裡的 YOUR_BOT_TOKEN 替換為您的機器人 Token
+	BotToken         = "YOUR_BOT_TOKEN" // 將這裡的 YOUR_BOT_TOKEN 替換為您的機器人 Token
 	commandPrefix    = "!"                                                                        // 指令前綴
 	MaximumQueueSize = 100                                                                        //最大駐列大小
 	guilds           = make(map[string]*core.ActiveGuild)
@@ -30,10 +30,12 @@ var (
 	youtubeService   *youtube.Service
 
 	// 聊天機器人設定
-	app_name   = "multi_tool_agent"
+	app_name   = "YOUR_APP_NAME" // 將這裡的 YOUR_APP_NAME 替換為您的應用名稱
 	user_id    = "user"
-	session_id = "6184ae5e-89b9-483d-86f6-881f52d6bb0a"
-	api_url    = "http://127.0.0.1:8000/run_sse" // 在此替換為你的目標 URL
+	session_id = "YOUR_SESSION_ID" // 將這裡的 YOUR_SESSION_ID 替換為您的會話 ID
+	api_url    = "YOUR_URL/run_sse" // 將這裡的 YOUR_URL 替換為你開啟API的網域(http:// OR httpd:// + 網域名稱 + /run_sse)
+	dc_channel_id = "YOUR_CHANNEL_ID" // 將這裡的 YOUR_CHANNEL_ID 替換為你DC的頻道 ID
+
 )
 
 func main() {
@@ -105,7 +107,7 @@ func messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 			_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Heartbeat latency: %s", latency))
 		}
 	}
-	if m.ChannelID == "1364124257889681429" {
+	if m.ChannelID == dc_channel_id {
 		log.Println("收到訊息")
 		Chat_Gemini(s, m)
 	}
