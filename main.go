@@ -228,7 +228,7 @@ func Chat_Gemini(s *discordgo.Session, m *discordgo.MessageCreate) {
 				},
 			},
 		},
-		"streaming": false,
+		"streaming": false,  // 是否使用流式傳輸
 	}
 
 	// 將數據編碼為 JSON
