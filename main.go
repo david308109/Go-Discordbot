@@ -22,19 +22,19 @@ import (
 
 var (
 	BotToken         = "YOUR_BOT_TOKEN" // 將這裡的 YOUR_BOT_TOKEN 替換為您的機器人 Token
-	commandPrefix    = "!"                                                                        // 指令前綴
-	MaximumQueueSize = 100                                                                        //最大駐列大小
+	commandPrefix    = "!"              // 指令前綴
+	MaximumQueueSize = 100              //最大駐列大小
 	guilds           = make(map[string]*core.ActiveGuild)
 	guildNames       = make(map[string]string)
 	guildsMutex      = sync.RWMutex{}
 	youtubeService   *youtube.Service
 
 	// 聊天機器人設定
-	app_name   = "YOUR_APP_NAME" // 將這裡的 YOUR_APP_NAME 替換為您的應用名稱
-	user_id    = "user"
-	session_id = "YOUR_SESSION_ID" // 將這裡的 YOUR_SESSION_ID 替換為您的會話 ID
-	api_url    = "YOUR_URL/run_sse" // 將這裡的 YOUR_URL 替換為你開啟API的網域(http:// OR httpd:// + 網域名稱 + /run_sse)
-	dc_channel_id = "YOUR_CHANNEL_ID" // 將這裡的 YOUR_CHANNEL_ID 替換為你DC的頻道 ID
+	app_name      = "YOUR_APP_NAME" // 將這裡的 YOUR_APP_NAME 替換為您的應用名稱
+	user_id       = "user"
+	session_id    = "YOUR_SESSION_ID"  // 將這裡的 YOUR_SESSION_ID 替換為您的會話 ID
+	api_url       = "YOUR_URL/run_sse" // 將這裡的 YOUR_URL 替換為你開啟API的網域(http:// OR httpd:// + 網域名稱 + /run_sse)
+	dc_channel_id = "YOUR_CHANNEL_ID"  // 將這裡的 YOUR_CHANNEL_ID 替換為你DC的頻道 ID
 
 )
 
@@ -228,7 +228,7 @@ func Chat_Gemini(s *discordgo.Session, m *discordgo.MessageCreate) {
 				},
 			},
 		},
-		"streaming": false,  // 是否使用流式傳輸
+		"streaming": false, // 是否使用流式傳輸
 	}
 
 	// 將數據編碼為 JSON
