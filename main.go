@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -108,8 +104,18 @@ func messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 	if m.ChannelID == dc_channel_id {
-		log.Println("收到訊息")
-		Chat_Gemini(s, m)
+		guildsMutex.Lock()
+		activeGuild := guilds[m.GuildID]
+		guildsMutex.Unlock()
+		text, err := Chat_Gemini(s, m)
+		if err != "success" {
+			log.Printf(text, err)
+			_, _ = s.ChannelMessageSend(m.ChannelID, text+err)
+		} else {
+			messageContent := "<@" + m.Author.ID + ">" + " " + text
+			_, _ = s.ChannelMessageSend(m.ChannelID, messageContent)
+			HandleEdgeTTSCommand(s, activeGuild, m, text)
+		}
 	}
 }
 
@@ -142,6 +148,33 @@ func GetGuildNameByID(bot *discordgo.Session, guildID string) string {
 		return guild.Name
 	}
 	return guildName
+}
+
+// joinVoiceChannelWithTimeout 加入語音頻道並設置超時退出
+func joinVoiceChannelWithTimeout(s *discordgo.Session, guildID, channelID string, timeout time.Duration) (*discordgo.VoiceConnection, error) {
+	voiceConn, err := s.ChannelVoiceJoin(guildID, channelID, false, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// 建立一個完成信號通道
+	done := make(chan struct{})
+
+	go func() {
+		timer := time.NewTimer(timeout) // 設定超時計時器
+		defer timer.Stop()
+
+		// 等待時間結束
+		<-timer.C
+
+		log.Println("超過指定時間，退出語音頻道。")
+		voiceConn.Disconnect() // 自動退出語音頻道
+
+		// 通知完成
+		close(done)
+	}()
+
+	return voiceConn, nil
 }
 
 // 播放音樂
@@ -212,81 +245,5 @@ func HandleYoutubeCommand(s *discordgo.Session, activeGuild *core.ActiveGuild, m
 				return
 			}
 		}()
-	}
-}
-
-func Chat_Gemini(s *discordgo.Session, m *discordgo.MessageCreate) {
-	data := map[string]any{
-		"app_name":   app_name,
-		"user_id":    user_id,
-		"session_id": session_id,
-		"new_message": map[string]any{
-			"role": user_id,
-			"parts": []map[string]string{
-				{
-					"text": m.Content,
-				},
-			},
-		},
-		"streaming": false, // 是否使用流式傳輸
-	}
-
-	// 將數據編碼為 JSON
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		log.Printf("Error marshalling JSON: %s", err.Error())
-		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error marshalling JSON: %s", err.Error()))
-		return
-	}
-
-	// 發送 POST 請求
-	resp, err := http.Post(api_url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		fmt.Println("Error sending POST request:", err.Error())
-		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error sending POST request: %s", err.Error()))
-		return
-	}
-	defer resp.Body.Close()
-
-	// 打印響應狀態碼
-	log.Printf("Response Status Code: %d", resp.StatusCode)
-
-	// 打印響應頭
-	log.Printf("Response Headers: %v", resp.Header)
-
-	// 讀取響應體
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Error reading response body: %s", err.Error())
-		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error reading response body: %s", err.Error()))
-		return
-	}
-
-	// 去掉 "data: " 前綴
-	jsondata := []byte(strings.TrimPrefix(string(body), "data: "))
-
-	// 使用 map 來解析 JSON 數據
-	var result map[string]any
-	if err := json.Unmarshal([]byte(jsondata), &result); err != nil {
-		log.Printf("Error decoding JSON: %s", err.Error())
-		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Error decoding JSON: %s", err.Error()))
-		return
-	}
-
-	// 提取 text 的內容
-	if content, ok := result["content"].(map[string]any); ok {
-		if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
-			if part, ok := parts[0].(map[string]any); ok {
-				if text, ok := part["text"].(string); ok {
-					log.Printf("提取的 text: %s", text)
-					mention := "<@" + m.Author.ID + ">"
-					messageContent := mention + " " + text
-					_, _ = s.ChannelMessageSend(m.ChannelID, messageContent)
-				}
-			}
-		}
-	} else {
-		log.Printf("未找到任何 text, 回傳值: %s", string(body))
-		_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("未找到任何 text, 回傳值: %s", string(body)))
 	}
 }
