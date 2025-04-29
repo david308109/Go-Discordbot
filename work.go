@@ -13,7 +13,7 @@ import (
 
 func worker(bot *discordgo.Session, activeGuild *core.ActiveGuild, guildId, channelId string) error {
 	defer cleanUpGuildWorker(activeGuild)
-	voice, err := bot.ChannelVoiceJoin(guildId, channelId, false, true)
+	voice, err := joinVoiceChannelWithTimeout(bot, guildId, channelId, 1*time.Minute)
 	if err != nil {
 		return err
 	}
@@ -21,7 +21,7 @@ func worker(bot *discordgo.Session, activeGuild *core.ActiveGuild, guildId, chan
 		if !voice.Ready {
 			voice.Disconnect()
 			log.Printf("[%s] VoiceConnection no longer in ready state, reconnecting", activeGuild.Name)
-			voice, err = bot.ChannelVoiceJoin(guildId, channelId, false, true)
+			voice, err = joinVoiceChannelWithTimeout(bot, guildId, channelId, 1*time.Minute)
 			if err != nil {
 				return err
 			}
@@ -39,7 +39,7 @@ func worker(bot *discordgo.Session, activeGuild *core.ActiveGuild, guildId, chan
 		time.Sleep(500 * time.Millisecond)
 		_ = voice.Speaking(false)
 	}
-	voice.Disconnect()
+	// voice.Disconnect()
 	return nil
 }
 
